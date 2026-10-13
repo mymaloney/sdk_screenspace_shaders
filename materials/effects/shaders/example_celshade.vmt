@@ -1,0 +1,57 @@
+screenspace_general
+{
+	$pixshader "example_celshade_ps20"
+
+	// requires the GShader library (Garry's Mod) with r_shaderlib 1
+	$basetexture "_rt_FullFrameFB"
+	$texture1    "_rt_NormalsTangents"
+	$texture2    "_rt_WPDepth"
+	$texture3    ""
+
+	$x360appchooser 1
+	$ignorez        1
+	$fix_fb         32768
+	"<dx90"
+	{
+		$no_draw 1
+	}
+
+	$copyalpha                 1
+	$alpha_blend_color_overlay 0
+	$alpha_blend               0
+	$linearwrite               0
+	$linearread_basetexture    0
+	$linearread_texture1       0
+	$linearread_texture2       0
+	$linearread_texture3       0
+
+	// bands, band softness, saturation, min brightness
+	$c0_x     4.0
+	$c0_y     0.05
+	$c0_z     1.3
+	$c0_w     0.15
+	// outline thickness (px), depth threshold, normal threshold, outline opacity
+	$c1_x     1.0
+	$c1_y     0.02
+	$c1_z     0.4
+	$c1_w     1.0
+	// outline color, outline fade distance
+	$c2_x     0.05
+	$c2_y     0.03
+	$c2_z     0.03
+	$c2_w     3000.0
+	// eye position (set from Lua), rim light strength
+	$c3_x     0.0
+	$c3_y     0.0
+	$c3_z     0.0
+	$c3_w     0.15
+
+	Proxies
+	{
+		Equals
+		{
+			srcVar1			$fix_fb
+			resultVar		$flags2
+		}
+	}
+}
