@@ -27,11 +27,11 @@ screenspace_general
 	$linearread_texture2       0
 	$linearread_texture3       0
 
-	// bands, band softness, saturation, min brightness
+	// bands, band softness, saturation, shadow detail threshold
 	$c0_x     4.0
 	$c0_y     0.05
-	$c0_z     1.3
-	$c0_w     0.15
+	$c0_z     1.05
+	$c0_w     0.1
 	// outline thickness (px), depth threshold, normal threshold, outline opacity
 	$c1_x     1.0
 	$c1_y     0.02
@@ -46,5 +46,5 @@ screenspace_general
 	$c3_x     0.0
 	$c3_y     0.0
 	$c3_z     0.0
-	$c3_w     0.15
+	$c3_w     0.0
 }

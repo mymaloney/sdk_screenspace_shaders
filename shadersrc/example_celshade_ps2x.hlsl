@@ -23,7 +23,7 @@
 //   $c0_x : number of shading bands (e.g. 4)
 //   $c0_y : band edge softness, 0 = hard steps, 0.5 = smooth (e.g. 0.05)
 //   $c0_z : saturation multiplier (1 = unchanged)
-//   $c0_w : minimum brightness of the darkest band (keeps shadows from crushing to black)
+//   $c0_w : pixels darker than this keep their original brightness (keeps shadow detail)
 //   $c1_x : outline thickness in pixels (e.g. 1)
 //   $c1_y : depth edge threshold, relative to depth (e.g. 0.02)
 //   $c1_z : normal edge threshold, 0-2 (e.g. 0.4)
@@ -31,7 +31,7 @@
 //   $c2_xyz : outline color
 //   $c2_w : distance (units) at which outlines have fully faded out
 //   $c3_xyz : eye position (set from Lua, the register value is unreliable on overlays)
-//   $c3_w : rim light strength
+//   $c3_w : rim light strength (0 = off)
 
 #include "common.hlsl"
 
@@ -102,28 +102,41 @@ float4 main( PS_INPUT_VPOS i ) : COLOR
 	// fade outlines and rim light out in the distance (and on the skybox)
 	float distanceFade = saturate(1.0 - depth / OutlineFadeDist);
 
-	// --- toon bands ---
-	float luma = dot(color, LumaWeights);
-	float banded = max(Posterize(saturate(luma), BandCount, BandSoftness), MinBrightness);
-	color *= banded / max(luma, 1e-4);
-
-	// --- saturation ---
-	float newLuma = dot(color, LumaWeights);
-	color = lerp(newLuma.xxx, color, Saturation);
-
-	// --- rim light (hard edged, cartoon style) ---
-	float3 viewDir = normalize(EyePos - worldPos);
-	float rim = 1.0 - saturate(dot(normal, viewDir));
-	rim = smoothstep(0.6, 0.65, rim) * banded * distanceFade;
-	color += rim * RimStrength;
-
-	// --- outlines ---
 	float2 px = TexBaseSize * OutlineThickness;
 	float2 uvL = uv - float2(px.x, 0.0);
 	float2 uvR = uv + float2(px.x, 0.0);
 	float2 uvU = uv - float2(0.0, px.y);
 	float2 uvD = uv + float2(0.0, px.y);
 
+	// --- toon bands ---
+	// pick the band from a slightly blurred luminance, so texture noise doesn't
+	// flicker between bands and turn into speckles
+	float luma = dot(color, LumaWeights);
+	float blurLuma = luma * 0.5 + 0.125 * (
+		dot(tex2D(TexBase, uvL).rgb, LumaWeights) +
+		dot(tex2D(TexBase, uvR).rgb, LumaWeights) +
+		dot(tex2D(TexBase, uvU).rgb, LumaWeights) +
+		dot(tex2D(TexBase, uvD).rgb, LumaWeights));
+	float banded = Posterize(saturate(blurLuma), BandCount, BandSoftness);
+	// pixels darker than MinBrightness keep their own brightness instead of
+	// being crushed to black (or boosted, which amplifies color noise)
+	banded = max(banded, min(blurLuma, MinBrightness));
+	// limit how far a pixel can be brightened/darkened to avoid blowing out colors
+	color *= clamp(banded / max(blurLuma, 1e-3), 0.5, 1.5);
+
+	// --- saturation ---
+	float newLuma = dot(color, LumaWeights);
+	color = saturate(lerp(newLuma.xxx, color, Saturation));
+
+	// --- rim light (hard edged, cartoon style) ---
+	// tints the existing color rather than adding gray, and only triggers on
+	// surfaces almost edge-on to the camera
+	float3 viewDir = normalize(EyePos - worldPos);
+	float rim = 1.0 - saturate(dot(normal, viewDir));
+	rim = smoothstep(0.85, 0.9, rim) * distanceFade;
+	color *= 1.0 + rim * RimStrength;
+
+	// --- outlines ---
 	// second derivative of depth, so flat surfaces at grazing angles don't get outlined
 	float dL = SampleDepth(uvL);
 	float dR = SampleDepth(uvR);
