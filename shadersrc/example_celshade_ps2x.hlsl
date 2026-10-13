@@ -1,6 +1,10 @@
 // Cartoony cel-shading post process for Garry's Mod, using the GShader library
 // https://github.com/Akabenko/GShader-library
 //
+// NOTE: this must be compiled as Shader Model 3.0 (build_celshade.bat) and paired with
+// GShader's "pp_vs30" vertex shader, like GShader's own shaders. UVs are computed from
+// VPOS because the default screenspace texcoords are wrong when drawn this way in GMod.
+//
 // Requires GShader's reconstruction to be enabled (r_shaderlib 1), which provides:
 //   _rt_NormalsTangents : .rg = world normal (octahedron encoded)
 //   _rt_WPDepth         : .rgb = 1 / world position, .a = 1 / linear depth (units)
@@ -47,6 +51,13 @@
 #define NormalBuffer     Tex1
 #define WPDepthBuffer    Tex2
 
+// only TEXCOORD0 is written by pp_vs30, so don't use PS_INPUT from common.hlsl
+struct PS_INPUT_VPOS
+{
+	float2 uv  : TEXCOORD0;
+	float2 pos : VPOS;
+};
+
 static const float3 LumaWeights = float3(0.299, 0.587, 0.114);
 
 // GShader octahedron normal decoding
@@ -78,9 +89,9 @@ float Posterize(float x, float bands, float softness)
 	return (i + t) / bands;
 }
 
-float4 main( PS_INPUT i ) : COLOR
+float4 main( PS_INPUT_VPOS i ) : COLOR
 {
-	float2 uv = i.uv;
+	float2 uv = (i.pos + 0.5) * TexBaseSize;
 	float3 color = tex2D(TexBase, uv).rgb;
 
 	float4 wpDepth = tex2D(WPDepthBuffer, uv);

@@ -99,7 +99,7 @@ But there is a workaround: you can rename a recompiled shader to something else,
 ## Garry's Mod: Cel Shading with GShader
 `example_celshade` is a cartoony cel-shading post process for Garry's Mod built on the [GShader library](https://github.com/Akabenko/GShader-library) (requires reconstruction enabled, `r_shaderlib 1`). It quantizes scene lighting into flat toon bands, boosts saturation, adds a hard rim light and draws ink outlines from GShader's depth (`_rt_WPDepth`) and world normal (`_rt_NormalsTangents`) buffers.
 
-Copy the compiled `example_celshade_ps20b.vcs` into `garrysmod/shaders/fxc`, and copy `materials/effects/shaders/example_celshade.vmt` and `lua/autorun/client/celshade.lua` into `garrysmod` (or an addon). Then enable it with `pp_celshade 1`, or from the Post Process menu under Shaders. All parameters are exposed as `pp_celshade_*` convars.
+This shader must be built as Shader Model 3.0 (like GShader's own shaders) and uses GShader's `pp_vs30` vertex shader, so it is not in `compile_shader_list.txt`. Build it with `shadersrc/build_celshade.bat`, then copy the compiled `example_celshade_ps30.vcs` into `garrysmod/shaders/fxc`, and copy `materials/effects/shaders/example_celshade.vmt` and `lua/autorun/client/celshade.lua` into `garrysmod` (or an addon). Then enable it with `pp_celshade 1`, or from the Post Process menu under Shaders. All parameters are exposed as `pp_celshade_*` convars.
 
 ## Packing the Shader
 If using these in a map: you will need to manually include the shader files if packing with VIDE or CompilePal, as they will not autodetect the files.

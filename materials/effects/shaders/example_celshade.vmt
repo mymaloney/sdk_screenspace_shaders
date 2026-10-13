@@ -1,6 +1,9 @@
 screenspace_general
 {
-	$pixshader "example_celshade_ps20"
+	// Shader Model 3.0, built with shadersrc/build_celshade.bat
+	$pixshader    "example_celshade_ps30"
+	// vertex shader shipped with the GShader library
+	$vertexshader "pp_vs30"
 
 	// requires the GShader library (Garry's Mod) with r_shaderlib 1
 	$basetexture "_rt_FullFrameFB"
@@ -8,9 +11,8 @@ screenspace_general
 	$texture2    "_rt_WPDepth"
 	$texture3    ""
 
-	$x360appchooser 1
-	$ignorez        1
-	$fix_fb         32768
+	$vertextransform 1
+	$ignorez         1
 	"<dx90"
 	{
 		$no_draw 1
@@ -45,13 +47,4 @@ screenspace_general
 	$c3_y     0.0
 	$c3_z     0.0
 	$c3_w     0.15
-
-	Proxies
-	{
-		Equals
-		{
-			srcVar1			$fix_fb
-			resultVar		$flags2
-		}
-	}
 }

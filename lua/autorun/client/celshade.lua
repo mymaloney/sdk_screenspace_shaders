@@ -38,9 +38,11 @@ hook.Add("RenderScreenspaceEffects", "CelShade", function()
 	mat:SetFloat("$c3_y", eye.y)
 	mat:SetFloat("$c3_z", eye.z)
 
+	-- shaderlib.DrawScreenQuad draws with the transform pp_vs30 expects;
+	-- render.DrawScreenQuad would place the quad incorrectly
 	render.UpdateScreenEffectTexture()
 	render.SetMaterial(mat)
-	render.DrawScreenQuad()
+	shaderlib.DrawScreenQuad()
 end)
 
 list.Set("PostProcess", "Cel Shading", {
