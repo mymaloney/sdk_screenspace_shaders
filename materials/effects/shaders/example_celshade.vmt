@@ -9,6 +9,7 @@ screenspace_general
 	$basetexture "_rt_FullFrameFB"
 	$texture1    "_rt_NormalsTangents"
 	$texture2    "_rt_WPDepth"
+	// _rt_Lightmaps is assigned from Lua, as it only exists with newer GShader versions
 	$texture3    ""
 
 	$vertextransform 1
@@ -42,9 +43,9 @@ screenspace_general
 	$c2_y     0.03
 	$c2_z     0.03
 	$c2_w     3000.0
-	// eye position (set from Lua), rim light strength
-	$c3_x     0.0
-	$c3_y     0.0
-	$c3_z     0.0
-	$c3_w     0.0
+	// lighting bands (0 = off), shadow brightness, lightmap scale (set from Lua), lighting threshold
+	$c3_x     1.0
+	$c3_y     0.45
+	$c3_z     4.59479
+	$c3_w     0.6
 }

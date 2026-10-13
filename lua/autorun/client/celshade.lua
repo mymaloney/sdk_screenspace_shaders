@@ -4,7 +4,7 @@
 -- Usage: pp_celshade 1
 
 local pp_celshade              = CreateClientConVar("pp_celshade", "0", true, false, "Enable cel-shading post process.", 0, 1)
-local pp_celshade_bands        = CreateClientConVar("pp_celshade_bands", "4", true, false, "Number of shading bands.", 2, 16)
+local pp_celshade_bands        = CreateClientConVar("pp_celshade_bands", "4", true, false, "Number of shading bands for models and props.", 1, 16)
 local pp_celshade_softness     = CreateClientConVar("pp_celshade_softness", "0.05", true, false, "Softness between bands.", 0, 0.5)
 local pp_celshade_saturation   = CreateClientConVar("pp_celshade_saturation", "1.05", true, false, "Saturation multiplier.", 0, 3)
 local pp_celshade_minbright    = CreateClientConVar("pp_celshade_minbright", "0.1", true, false, "Pixels darker than this keep their original brightness.", 0, 1)
@@ -13,7 +13,9 @@ local pp_celshade_depth_thresh = CreateClientConVar("pp_celshade_depth_thresh", 
 local pp_celshade_norm_thresh  = CreateClientConVar("pp_celshade_norm_thresh", "0.4", true, false, "Normal outline threshold.", 0.01, 2)
 local pp_celshade_outline      = CreateClientConVar("pp_celshade_outline", "1", true, false, "Outline opacity.", 0, 1)
 local pp_celshade_fade         = CreateClientConVar("pp_celshade_fade", "3000", true, false, "Distance where outlines fade out.", 100, 20000)
-local pp_celshade_rim          = CreateClientConVar("pp_celshade_rim", "0", true, false, "Rim light strength.", 0, 1)
+local pp_celshade_light_bands  = CreateClientConVar("pp_celshade_light_bands", "1", true, false, "Hard lighting bands on the world (0 = off). Needs r_shaderlib_lightmaps 1.", 0, 8)
+local pp_celshade_shadow       = CreateClientConVar("pp_celshade_shadow", "0.45", true, false, "Brightness of shadowed areas with hard lighting.", 0, 1)
+local pp_celshade_light_thresh = CreateClientConVar("pp_celshade_light_thresh", "0.6", true, false, "Light level where shadow turns into lit.", 0, 1)
 
 local mat = Material("effects/shaders/example_celshade")
 
@@ -31,12 +33,18 @@ hook.Add("RenderScreenspaceEffects", "CelShade", function()
 	mat:SetFloat("$c1_z", pp_celshade_norm_thresh:GetFloat())
 	mat:SetFloat("$c1_w", pp_celshade_outline:GetFloat())
 	mat:SetFloat("$c2_w", pp_celshade_fade:GetFloat())
-	mat:SetFloat("$c3_w", pp_celshade_rim:GetFloat())
 
-	local eye = EyePos()
-	mat:SetFloat("$c3_x", eye.x)
-	mat:SetFloat("$c3_y", eye.y)
-	mat:SetFloat("$c3_z", eye.z)
+	-- hard lighting only works when GShader is building its lightmap buffer,
+	-- otherwise _rt_Lightmaps is missing or stale, so turn the feature off
+	local lightmaps = GetConVar("r_shaderlib_lightmaps")
+	local useLightmaps = shaderlib.rt_Lightmaps and lightmaps and lightmaps:GetBool()
+	if useLightmaps then
+		mat:SetTexture("$texture3", shaderlib.rt_Lightmaps)
+	end
+	mat:SetFloat("$c3_x", useLightmaps and pp_celshade_light_bands:GetFloat() or 0)
+	mat:SetFloat("$c3_y", pp_celshade_shadow:GetFloat())
+	mat:SetFloat("$c3_z", render.GetHDREnabled() and 16 or 4.59479)
+	mat:SetFloat("$c3_w", pp_celshade_light_thresh:GetFloat())
 
 	-- shaderlib.DrawScreenQuad draws with the transform pp_vs30 expects;
 	-- render.DrawScreenQuad would place the quad incorrectly
@@ -52,7 +60,7 @@ list.Set("PostProcess", "Cel Shading", {
 	["cpanel"] = function(panel)
 		panel:Help("Cartoony cel-shading. Requires GShader library with reconstruction enabled.")
 		panel:CheckBox("Enable", "pp_celshade")
-		panel:NumSlider("Bands", "pp_celshade_bands", 2, 16, 0)
+		panel:NumSlider("Model bands", "pp_celshade_bands", 1, 16, 0)
 		panel:NumSlider("Band softness", "pp_celshade_softness", 0, 0.5, 2)
 		panel:NumSlider("Saturation", "pp_celshade_saturation", 0, 3, 2)
 		panel:NumSlider("Shadow detail", "pp_celshade_minbright", 0, 1, 2)
@@ -61,6 +69,9 @@ list.Set("PostProcess", "Cel Shading", {
 		panel:NumSlider("Normal threshold", "pp_celshade_norm_thresh", 0.01, 2, 2)
 		panel:NumSlider("Outline opacity", "pp_celshade_outline", 0, 1, 2)
 		panel:NumSlider("Outline fade distance", "pp_celshade_fade", 100, 20000, 0)
-		panel:NumSlider("Rim light", "pp_celshade_rim", 0, 1, 2)
+		panel:Help("Hard world lighting (needs GShader lightmaps: r_shaderlib_lightmaps 1)")
+		panel:NumSlider("Lighting bands", "pp_celshade_light_bands", 0, 8, 0)
+		panel:NumSlider("Shadow brightness", "pp_celshade_shadow", 0, 1, 2)
+		panel:NumSlider("Lighting threshold", "pp_celshade_light_thresh", 0, 1, 2)
 	end
 })
