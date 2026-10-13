@@ -10,8 +10,9 @@
 //   _rt_WPDepth         : .rgb = 1 / world position, .a = 1 / linear depth (units)
 //
 // Effect:
-//   - the scene is smoothed beforehand by example_celsmooth (edge-preserving blur),
-//     so bands are picked from clean contours instead of noisy/grungy textures
+//   - the scene is smoothed beforehand by example_celsmooth (edge-preserving blur).
+//     Bands are picked from its wide-area "shading" brightness (alpha), which roughly
+//     follows lighting and ignores texture, so textures don't turn into splotches
 //   - luminance is quantized into flat "toon" bands (hue is preserved)
 //   - optional saturation boost
 //   - ink outlines are drawn on depth and normal discontinuities
@@ -34,6 +35,7 @@
 //   $c2_xyz : outline color
 //   $c2_w : distance (units) at which outlines have fully faded out
 //   $c3_x : texture detail, 0 = flat smoothed colors, 1 = original texture detail
+//   $c3_y : 1 if $texture3 alpha holds shading brightness (smoothing on), else 0
 
 #include "common.hlsl"
 
@@ -48,6 +50,7 @@
 #define OutlineColor     Constants2.xyz
 #define OutlineFadeDist  Constants2.w
 #define TextureDetail    Constants3.x
+#define HasShade         Constants3.y
 
 #define NormalBuffer     Tex1
 #define WPDepthBuffer    Tex2
@@ -95,15 +98,16 @@ float4 main( PS_INPUT_VPOS i ) : COLOR
 {
 	float2 uv = (i.pos + 0.5) * TexBaseSize;
 	float3 original = tex2D(TexBase, uv).rgb;
-	float3 smoothed = tex2D(SmoothBuffer, uv).rgb;
+	float4 smoothSample = tex2D(SmoothBuffer, uv);
+	float3 smoothed = smoothSample.rgb;
 
 	float depth = SampleDepth(uv);
 	float3 normal = SampleNormal(uv);
 
 	// --- toon bands ---
-	// the band is picked from the smoothed scene, so texture noise can't flip
-	// pixels between bands and turn into splotches
-	float luma = dot(smoothed, LumaWeights);
+	// the band is picked from the wide-area shading brightness, so texture patches
+	// and noise can't flip pixels between bands and turn into splotches
+	float luma = lerp(dot(smoothed, LumaWeights), smoothSample.a, HasShade);
 	float banded = Posterize(saturate(luma), BandCount, BandSoftness);
 	// pixels darker than MinBrightness keep their own brightness instead of
 	// being crushed to black (or boosted, which amplifies color noise)

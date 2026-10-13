@@ -45,4 +45,6 @@ screenspace_general
 	$c2_w     3000.0
 	// texture detail (0 = flat colors, 1 = original textures)
 	$c3_x     0.25
+	// 1 if $texture3 alpha holds shading brightness (set from Lua)
+	$c3_y     0.0
 }
