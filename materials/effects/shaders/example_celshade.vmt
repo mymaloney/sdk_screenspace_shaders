@@ -43,9 +43,9 @@ screenspace_general
 	$c2_y     0.03
 	$c2_z     0.03
 	$c2_w     3000.0
-	// lighting bands (0 = off), shadow brightness, lightmap scale (set from Lua), lighting threshold
+	// hard lighting strength, shadow edge contrast, lightmap scale (set from Lua), edge radius (set from Lua)
 	$c3_x     1.0
-	$c3_y     0.45
+	$c3_y     0.1
 	$c3_z     4.59479
-	$c3_w     0.6
+	$c3_w     40000.0
 }

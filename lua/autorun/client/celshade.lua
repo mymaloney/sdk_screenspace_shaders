@@ -13,9 +13,9 @@ local pp_celshade_depth_thresh = CreateClientConVar("pp_celshade_depth_thresh", 
 local pp_celshade_norm_thresh  = CreateClientConVar("pp_celshade_norm_thresh", "0.4", true, false, "Normal outline threshold.", 0.01, 2)
 local pp_celshade_outline      = CreateClientConVar("pp_celshade_outline", "1", true, false, "Outline opacity.", 0, 1)
 local pp_celshade_fade         = CreateClientConVar("pp_celshade_fade", "3000", true, false, "Distance where outlines fade out.", 100, 20000)
-local pp_celshade_light_bands  = CreateClientConVar("pp_celshade_light_bands", "1", true, false, "Hard lighting bands on the world (0 = off). Needs r_shaderlib_lightmaps 1.", 0, 8)
-local pp_celshade_shadow       = CreateClientConVar("pp_celshade_shadow", "0.45", true, false, "Brightness of shadowed areas with hard lighting.", 0, 1)
-local pp_celshade_light_thresh = CreateClientConVar("pp_celshade_light_thresh", "0.6", true, false, "Light level where shadow turns into lit.", 0, 1)
+local pp_celshade_light          = CreateClientConVar("pp_celshade_light", "1", true, false, "Hard shadow edges on the world (0 = off). Needs r_shaderlib_lightmaps 1.", 0, 1)
+local pp_celshade_light_contrast = CreateClientConVar("pp_celshade_light_contrast", "0.1", true, false, "How much the light must change to count as a shadow edge.", 0.01, 1)
+local pp_celshade_light_radius   = CreateClientConVar("pp_celshade_light_radius", "48", true, false, "Distance (units) searched for shadow edges. Should cover the width of soft shadows.", 4, 256)
 
 local mat = Material("effects/shaders/example_celshade")
 
@@ -41,10 +41,14 @@ hook.Add("RenderScreenspaceEffects", "CelShade", function()
 	if useLightmaps then
 		mat:SetTexture("$texture3", shaderlib.rt_Lightmaps)
 	end
-	mat:SetFloat("$c3_x", useLightmaps and pp_celshade_light_bands:GetFloat() or 0)
-	mat:SetFloat("$c3_y", pp_celshade_shadow:GetFloat())
+	mat:SetFloat("$c3_x", useLightmaps and pp_celshade_light:GetFloat() or 0)
+	mat:SetFloat("$c3_y", pp_celshade_light_contrast:GetFloat())
 	mat:SetFloat("$c3_z", render.GetHDREnabled() and 16 or 4.59479)
-	mat:SetFloat("$c3_w", pp_celshade_light_thresh:GetFloat())
+
+	-- the shader divides this by depth to get the search radius in pixels
+	local view = render.GetViewSetup()
+	local pixelsPerUnit = (ScrW() * 0.5) / math.tan(math.rad(view.fov * 0.5))
+	mat:SetFloat("$c3_w", pp_celshade_light_radius:GetFloat() * pixelsPerUnit)
 
 	-- shaderlib.DrawScreenQuad draws with the transform pp_vs30 expects;
 	-- render.DrawScreenQuad would place the quad incorrectly
@@ -70,8 +74,8 @@ list.Set("PostProcess", "Cel Shading", {
 		panel:NumSlider("Outline opacity", "pp_celshade_outline", 0, 1, 2)
 		panel:NumSlider("Outline fade distance", "pp_celshade_fade", 100, 20000, 0)
 		panel:Help("Hard world lighting (needs GShader lightmaps: r_shaderlib_lightmaps 1)")
-		panel:NumSlider("Lighting bands", "pp_celshade_light_bands", 0, 8, 0)
-		panel:NumSlider("Shadow brightness", "pp_celshade_shadow", 0, 1, 2)
-		panel:NumSlider("Lighting threshold", "pp_celshade_light_thresh", 0, 1, 2)
+		panel:NumSlider("Hard shadows", "pp_celshade_light", 0, 1, 2)
+		panel:NumSlider("Shadow edge contrast", "pp_celshade_light_contrast", 0.01, 1, 2)
+		panel:NumSlider("Shadow edge radius", "pp_celshade_light_radius", 4, 256, 0)
 	end
 })

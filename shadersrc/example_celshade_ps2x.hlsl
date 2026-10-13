@@ -13,7 +13,9 @@
 //
 // Effect:
 //   - on world brushes with a lightmap, the lighting is separated from the surface
-//     color and stepped into hard-edged bands (clean cartoon shadows, texture kept)
+//     color and its shadow edges are sharpened (clean cartoon shadows, texture kept).
+//     Only places where the light changes a lot over a short distance are sharpened,
+//     so the slow gradients of baked lighting don't turn into blobs
 //   - everything else (models, props, viewmodel) has its luminance quantized into
 //     flat "toon" bands (hue is preserved)
 //   - optional saturation boost
@@ -36,10 +38,11 @@
 //   $c1_w : outline opacity, 0-1
 //   $c2_xyz : outline color
 //   $c2_w : distance (units) at which outlines have fully faded out
-//   $c3_x : number of lighting bands for lightmapped world (0 = off, use model banding)
-//   $c3_y : brightness of the darkest lighting band (shadow brightness), 0-1
+//   $c3_x : hard lighting strength for lightmapped world, 0 = off, 1 = full
+//   $c3_y : light contrast needed to count as a shadow edge, 0-1 (e.g. 0.1)
 //   $c3_z : lightmap scale (set from Lua: 16 in HDR, 4.59479 in LDR)
-//   $c3_w : lighting threshold, where the first lit band starts, 0-1 (e.g. 0.6)
+//   $c3_w : shadow edge search radius in pixels at a distance of 1 unit
+//           (set from Lua from a radius in world units and the field of view)
 
 #include "common.hlsl"
 
@@ -53,10 +56,13 @@
 #define OutlineOpacity   Constants1.w
 #define OutlineColor     Constants2.xyz
 #define OutlineFadeDist  Constants2.w
-#define LightBands       Constants3.x
-#define ShadowLevel      Constants3.y
+#define HardLighting     Constants3.x
+#define LightContrast    Constants3.y
 #define LightmapScaleC   Constants3.z
-#define LightThreshold   Constants3.w
+#define LightRadius      Constants3.w
+
+// GShader's depth buffer reads exactly 1 (4000 units) on the sky
+#define SKY_DEPTH        4000.0
 
 #define NormalBuffer     Tex1
 #define WPDepthBuffer    Tex2
@@ -100,6 +106,18 @@ float Posterize(float x, float bands, float softness)
 	return (i + t) / bands;
 }
 
+// linear brightness of the lightmap at uv
+float LinearLight(float2 uv)
+{
+	return saturate(dot(tex2D(LightmapBuffer, uv).rgb, LumaWeights) * LightmapScaleC);
+}
+
+// perceptual (gamma space) brightness, as the light would look on a white surface
+float GammaLight(float x)
+{
+	return pow(x, 1.0 / 2.2);
+}
+
 float4 main( PS_INPUT_VPOS i ) : COLOR
 {
 	float2 uv = (i.pos + 0.5) * TexBaseSize;
@@ -135,17 +153,49 @@ float4 main( PS_INPUT_VPOS i ) : COLOR
 
 	// --- hard lighting (lightmapped world brushes) ---
 	// the framebuffer is roughly surface color * lighting, so dividing out the smooth
-	// lightmap and multiplying by a stepped version swaps soft shadows for hard ones
+	// lightmap and multiplying by a sharpened version swaps soft shadows for hard ones
 	// while keeping texture detail. Brightness is compared in gamma space, like the framebuffer.
-	float3 lightmap = tex2D(LightmapBuffer, uv).rgb;
-	float hasLightmap = step(1.0 / 255.0, max(lightmap.r, max(lightmap.g, lightmap.b)));
-	hasLightmap *= step(0.5, LightBands);
+	float linearLight = LinearLight(uv);
+	float hasLightmap = step(1e-4, linearLight);
+	// GShader draws lightmapped geometry wherever nothing is in front of it, so on
+	// the sky it picks up faraway brushes (e.g. the 3D skybox room). Ignore the sky.
+	hasLightmap *= step(0.5, abs(depth - SKY_DEPTH));
+	hasLightmap *= step(0.001, HardLighting);
 
-	float lightLevel = pow(saturate(dot(lightmap, LumaWeights) * LightmapScaleC), 1.0 / 2.2);
-	// shift so the first band boundary sits at LightThreshold
-	float steppedLight = Posterize(saturate(lightLevel - LightThreshold + 0.5 / max(LightBands, 1.0)), max(LightBands, 1.0), BandSoftness);
-	steppedLight = lerp(ShadowLevel, 1.0, steppedLight);
-	float3 litColor = color * clamp(steppedLight / max(lightLevel, 1e-3), 0.2, 3.0);
+	// find the darkest and brightest light nearby. The search radius is fixed in
+	// world units, so it shrinks with distance
+	float radius = clamp(LightRadius / depth, 1.5, 32.0);
+	// (searched in linear space, the gamma curve doesn't change which is darkest)
+	float lightMin = linearLight;
+	float lightMax = linearLight;
+	[unroll]
+	for (int k = 0; k < 8; k++)
+	{
+		float angle = k * 0.785398;
+		float2 dir = float2(cos(angle), sin(angle)) * TexBaseSize * radius;
+		[unroll]
+		for (int r = 1; r <= 2; r++)
+		{
+			float sampleLight = LinearLight(uv + dir * (r * 0.5));
+			// pixels without a lightmap (props, models) shouldn't count as shadow
+			sampleLight = lerp(linearLight, sampleLight, step(1e-4, sampleLight));
+			lightMin = min(lightMin, sampleLight);
+			lightMax = max(lightMax, sampleLight);
+		}
+	}
+
+	// across a shadow edge, snap to the dark or bright side at the midpoint.
+	// Gentle gradients (low contrast) are left as they are
+	float lightLevel = GammaLight(linearLight);
+	lightMin = GammaLight(lightMin);
+	lightMax = GammaLight(lightMax);
+	float contrast = lightMax - lightMin;
+	float lightMid = (lightMin + lightMax) * 0.5;
+	float snapped = lerp(lightMin, lightMax,
+		smoothstep(lightMid - BandSoftness * contrast, lightMid + BandSoftness * contrast + 1e-4, lightLevel));
+	float edgeAmount = smoothstep(LightContrast, LightContrast * 1.5, contrast) * saturate(HardLighting);
+	float hardLight = lerp(lightLevel, snapped, edgeAmount);
+	float3 litColor = color * clamp(hardLight / max(lightLevel, 1e-3), 0.2, 3.0);
 
 	color = lerp(bandedColor, litColor, hasLightmap);
 
