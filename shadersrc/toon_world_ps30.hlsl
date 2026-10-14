@@ -83,14 +83,19 @@ float4 main( PS_INPUT_VPOS i ) : COLOR
 	// offset along the normal before looking up, to avoid self-shadowing acne
 	float4 shadowPos = mul(float4(worldPos + normal * NormalOffset, 1.0), g_WorldToShadow);
 	float shadowDepth = shadowPos.z - ShadowBias;
-	float2 texel = ShadowTexel * 0.5;
-	float shadow = 0.25 * (
-		ShadowTap(shadowPos.xy + float2(-texel.x, -texel.y), shadowDepth) +
-		ShadowTap(shadowPos.xy + float2( texel.x, -texel.y), shadowDepth) +
-		ShadowTap(shadowPos.xy + float2(-texel.x,  texel.y), shadowDepth) +
-		ShadowTap(shadowPos.xy + float2( texel.x,  texel.y), shadowDepth));
-	// harden the small filter into a crisp edge
-	shadow = smoothstep(0.25, 0.75, shadow);
+
+	// bilinear filtering of the shadow test: blend the 4 nearest texels by distance.
+	// Its 50% contour runs smoothly between texels, so hardening it below gives a
+	// crisp edge without the staircase of individual shadow map texels
+	float2 texelPos = shadowPos.xy / ShadowTexel - 0.5;
+	float2 blend = frac(texelPos);
+	float2 base = (floor(texelPos) + 0.5) * ShadowTexel;
+	float s00 = ShadowTap(base, shadowDepth);
+	float s10 = ShadowTap(base + float2(ShadowTexel.x, 0.0), shadowDepth);
+	float s01 = ShadowTap(base + float2(0.0, ShadowTexel.y), shadowDepth);
+	float s11 = ShadowTap(base + ShadowTexel, shadowDepth);
+	float shadow = lerp(lerp(s00, s10, blend.x), lerp(s01, s11, blend.x), blend.y);
+	shadow = smoothstep(0.4, 0.6, shadow);
 
 	// outside the shadow map the scene keeps its original lighting, fading out near the edge
 	float2 edge = abs(shadowPos.xy - 0.5) * 2.0;
