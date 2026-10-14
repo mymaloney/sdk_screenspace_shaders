@@ -13,8 +13,8 @@
 -- prop gets baked vertex lighting (no bumpmap) or runtime lighting (bumpmap). Adding
 -- a bumpmap afterwards leaves it with no lighting at all, so it renders black.
 -- Materials used by static props are therefore only patched if they already have a
--- bumpmap. Static props are found through NikNaks (installed with the GShader
--- library); without it no bumpmaps are added at all, to be safe.
+-- bumpmap. Static prop models are read from the map's .bsp file; if that fails, no
+-- bumpmaps are added at all, to be safe.
 --
 -- Usage: toon_lighting 1
 
@@ -96,11 +96,23 @@ local function IsTexture(tex)
 	return tex and !tex:IsError()
 end
 
+local function IsOurTexture(tex, rt)
+	return tex and tex:GetName() == rt:GetName()
+end
+
 local function SaveParams(mat)
 	local lightwarp = mat:GetTexture("$lightwarptexture")
 	local bump = mat:GetTexture("$bumpmap")
+
+	-- materials stay modified in memory until the game restarts, so a material can
+	-- still carry our changes from before this script was (re)loaded. In that case
+	-- its originals are what we would have saved back then
+	if IsOurTexture(bump, flatNormalRT) then
+		return {}
+	end
+
 	return {
-		lightwarp  = IsTexture(lightwarp) and lightwarp or nil,
+		lightwarp  = (IsTexture(lightwarp) and !IsOurTexture(lightwarp, rampRT)) and lightwarp or nil,
 		bump       = IsTexture(bump) and bump or nil,
 		phong      = mat:GetInt("$phong"),
 		phongboost = mat:GetFloat("$phongboost"),
@@ -134,35 +146,102 @@ local function ApplyParams(mat, saved)
 	mat:Recompute()
 end
 
+local function RestoreMaterial(mat, saved)
+	RestoreTexture(mat, "$lightwarptexture", saved.lightwarp)
+	RestoreTexture(mat, "$bumpmap", saved.bump)
+	RestoreInt(mat, "$phong", saved.phong)
+	RestoreFloat(mat, "$phongboost", saved.phongboost)
+	RestoreInt(mat, "$halflambert", saved.halflambert)
+	mat:Recompute()
+end
+
 local function IsPatchedNow(mat)
 	local tex = mat:GetTexture("$lightwarptexture")
 	return tex and tex:GetName() == rampRT:GetName()
 end
 
--- materials used by static props (nil = unknown, NikNaks not available)
+-- materials used by static props (nil = unknown)
 local staticPropMaterials
 local staticPropsCollected = false
 
--- static props aren't entities on the client, so look their models up through NikNaks
--- and read the materials from a temporary clientside model
+local SPRP_LUMP_ID = 1936749168 -- "sprp", the static prop game lump
+local GAME_LUMP_INDEX = 35
+
+-- reads the static prop model list straight from the map's .bsp
+local function ReadStaticPropModels()
+	local f = file.Open("maps/" .. game.GetMap() .. ".bsp", "rb", "GAME")
+	if !f then return nil end
+
+	local models
+	local ok, err = pcall(function()
+		if f:Read(4) != "VBSP" then return end
+
+		-- header: ident, version, then 64 lumps of { offset, length, version, fourCC }
+		f:Seek(8 + GAME_LUMP_INDEX * 16)
+		local gameLumpOffset = f:ReadLong()
+
+		f:Seek(gameLumpOffset)
+		local lumpCount = f:ReadLong()
+		for _ = 1, lumpCount do
+			local id = f:ReadLong()
+			local flags = f:ReadUShort()
+			f:ReadUShort() -- version
+			local offset = f:ReadLong()
+			f:ReadLong() -- length
+
+			if id == SPRP_LUMP_ID then
+				if bit.band(flags, 1) != 0 then return end -- compressed, not supported
+
+				-- model dictionary: count, then 128 byte null-padded paths
+				f:Seek(offset)
+				local count = f:ReadLong()
+				if count < 0 or count > 16384 then return end
+
+				models = {}
+				for i = 1, count do
+					local path = string.match(f:Read(128) or "", "^[^%z]*")
+					if path and path != "" then models[#models + 1] = path end
+				end
+				return
+			end
+		end
+
+		models = {} -- no static prop lump: the map has no static props
+	end)
+	f:Close()
+
+	if !ok then
+		MsgN("[toon_lighting] couldn't read static props from the map: ", err)
+		return nil
+	end
+	return models
+end
+
+-- static props aren't entities on the client, so read their models from the map
+-- and get the materials from a temporary clientside model
 local function CollectStaticPropMaterials()
 	if staticPropsCollected then return end
 	staticPropsCollected = true
 
-	if !NikNaks or !NikNaks.CurrentMap then return end
-	local ok, models = pcall(NikNaks.CurrentMap.GetStaticPropModels, NikNaks.CurrentMap)
-	if !ok or !models then return end
+	local models = ReadStaticPropModels()
+	if !models then
+		MsgN("[toon_lighting] static props unknown, only models that already have bumpmaps get toon lighting")
+		return
+	end
 
 	staticPropMaterials = {}
+	local count = 0
 	for _, model in ipairs(models) do
 		local csModel = ClientsideModel(model, RENDERGROUP_OTHER)
 		if IsValid(csModel) then
 			for _, name in ipairs(csModel:GetMaterials() or {}) do
+				if !staticPropMaterials[name] then count = count + 1 end
 				staticPropMaterials[name] = true
 			end
 			csModel:Remove()
 		end
 	end
+	MsgN("[toon_lighting] found ", #models, " static prop models using ", count, " materials")
 end
 
 -- adding a bumpmap is only safe if no static prop uses the material (see top)
@@ -190,6 +269,10 @@ local function PatchMaterial(name)
 	local saved = SaveParams(mat)
 	if !saved.bump and !CanAddBumpmap(name) then
 		skipped[name] = true
+		-- undo our changes if it still has them from before (see SaveParams)
+		if IsOurTexture(mat:GetTexture("$bumpmap"), flatNormalRT) then
+			RestoreMaterial(mat, saved)
+		end
 		return
 	end
 
@@ -199,13 +282,7 @@ end
 
 local function RestoreAll()
 	for _, entry in pairs(patched) do
-		local mat, saved = entry.mat, entry.saved
-		RestoreTexture(mat, "$lightwarptexture", saved.lightwarp)
-		RestoreTexture(mat, "$bumpmap", saved.bump)
-		RestoreInt(mat, "$phong", saved.phong)
-		RestoreFloat(mat, "$phongboost", saved.phongboost)
-		RestoreInt(mat, "$halflambert", saved.halflambert)
-		mat:Recompute()
+		RestoreMaterial(entry.mat, entry.saved)
 	end
 	patched = {}
 end
