@@ -12,8 +12,10 @@
 -- Static props are the exception: their lighting is baked into their vertices at map
 -- load, which the phong path ignores, so patched static props render black (and in
 -- testing, so did dynamic models sharing their materials). Materials used by static
--- props are therefore never patched. Static prop models are read from the map's .bsp
--- file; if that fails, nothing is patched at all, to be safe.
+-- props are therefore never patched. Instead, spawned models using them get their own
+-- copy of the material (through a client-side sub-material override), and the copy is
+-- patched. Static prop models are read from the map's .bsp file; if that fails,
+-- nothing is patched at all, to be safe.
 --
 -- toon_lighting_inspect prints what happened to the materials of the model you're
 -- looking at.
@@ -26,6 +28,7 @@ local toon_lighting_threshold  = CreateClientConVar("toon_lighting_threshold", "
 local toon_lighting_softness   = CreateClientConVar("toon_lighting_softness", "0.02", true, false, "Softness of the band edges.", 0, 0.25)
 local toon_lighting_shadow     = CreateClientConVar("toon_lighting_shadow", "0.15", true, false, "Direct light kept on the shadow side.", 0, 1)
 local toon_lighting_brightness = CreateClientConVar("toon_lighting_brightness", "1", true, false, "Brightness of the lit side.", 0.25, 2)
+local toon_lighting_copies     = CreateClientConVar("toon_lighting_copies", "1", true, false, "Give spawned models that share materials with static props their own toon-lit copy.", 0, 1)
 local toon_lighting_flat_mats  = CreateClientConVar("toon_lighting_flat_mats", "1", true, false, "While enabled, set mat_specular 0 and mat_disable_bloom 1.", 0, 1)
 -- engine settings that were active before we changed them, restored when turned off
 local toon_lighting_saved_mats = CreateClientConVar("toon_lighting_saved_mats", "", true, false, "Internal: settings to restore.")
@@ -295,10 +298,111 @@ local function PatchStaticProps()
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Copies of static prop materials, for spawned models
+-------------------------------------------------------------------------------
+
+-- [original name] = { name = copy name, mat = IMaterial } or false if it can't be copied
+local copies = {}
+-- [entity] = { [sub-material index] = override string }, overrides we set
+local overrides = setmetatable({}, { __mode = "k" })
+
+-- material parameter keys that hold runtime state rather than material settings
+local COPY_SKIP_KEYS = {
+	["$flags2"] = true,
+	["$flags_defined2"] = true,
+}
+
+-- converts a value from IMaterial:GetKeyValues() to a CreateMaterial keyvalue string
+local function KeyValueString(value)
+	local t = type(value)
+	if t == "ITexture" then return !value:IsError() and value:GetName() or nil end
+	if t == "number" then return tostring(value) end
+	if t == "string" then return value != "" and value or nil end
+	if t == "Vector" then return string.format("[%f %f %f]", value.x, value.y, value.z) end
+	return nil -- matrices etc. keep their defaults
+end
+
+local function GetCopy(name)
+	if copies[name] != nil then return copies[name] end
+	copies[name] = false
+
+	local mat = Material(name)
+	if !mat or mat:IsError() then return false end
+
+	local keyValues = {}
+	for key, value in pairs(mat:GetKeyValues()) do
+		if !COPY_SKIP_KEYS[string.lower(key)] then
+			keyValues[key] = KeyValueString(value)
+		end
+	end
+
+	local copyName = "toon_lighting_" .. string.gsub(name, "[/\\]", "_")
+	local copy = CreateMaterial(copyName, "VertexLitGeneric", keyValues)
+	if !copy or copy:IsError() then return false end
+
+	local saved = SaveParams(copy)
+	patched[copyName] = { mat = copy, saved = saved }
+	ApplyParams(copy, saved)
+
+	copies[name] = { name = copyName, mat = copy }
+	return copies[name]
+end
+
+-- removes the overrides we set on an entity (leaving ones set by the server or tools)
+local function RemoveOverrides(ent)
+	local entOverrides = overrides[ent]
+	if !entOverrides then return end
+	if IsValid(ent) then
+		for index, value in pairs(entOverrides) do
+			if ent:GetSubMaterial(index) == value then ent:SetSubMaterial(index, "") end
+		end
+	end
+	overrides[ent] = nil
+end
+
+local function ApplyCopies(ent)
+	RemoveOverrides(ent)
+	if !toon_lighting_copies:GetBool() or !staticPropMaterials then return end
+	-- a whole-model material override replaces all sub-materials anyway
+	if (ent:GetMaterial() or "") != "" then return end
+
+	for i, name in ipairs(ent:GetMaterials() or {}) do
+		local index = i - 1
+		-- only where nothing else (server, tools) has overridden the material
+		if staticPropMaterials[name] and (ent:GetSubMaterial(index) or "") == "" then
+			local copy = GetCopy(name)
+			if copy then
+				local value = "!" .. copy.name -- "!" refers to a Lua-created material
+				ent:SetSubMaterial(index, value)
+				overrides[ent] = overrides[ent] or {}
+				overrides[ent][index] = value
+			end
+		end
+	end
+end
+
+-- client-side overrides can be reset, e.g. when the server updates the entity
+local function LostOverrides(ent)
+	local entOverrides = overrides[ent]
+	if !entOverrides then return false end
+	for index, value in pairs(entOverrides) do
+		if ent:GetSubMaterial(index) != value then return true end
+	end
+	return false
+end
+
+local function RemoveAllOverrides()
+	for ent in pairs(overrides) do
+		RemoveOverrides(ent)
+	end
+end
+
 local function PatchEntity(ent)
 	for _, name in ipairs(ent:GetMaterials() or {}) do
 		PatchMaterial(name)
 	end
+	ApplyCopies(ent)
 	-- material overrides set by tools/addons
 	PatchMaterial(ent:GetMaterial() or "")
 	for i = 0, #(ent:GetMaterials() or {}) - 1 do
@@ -315,7 +419,7 @@ local function ScanEntities(force)
 
 	for _, ent in ipairs(ents.GetAll()) do
 		local model = ent:GetModel()
-		if model and (force or entityModels[ent] != model) then
+		if model and (force or entityModels[ent] != model or LostOverrides(ent)) then
 			entityModels[ent] = model
 			PatchEntity(ent)
 		end
@@ -390,7 +494,9 @@ end
 local function Disable()
 	active = false
 	timer.Remove("ToonLighting_Scan")
+	RemoveAllOverrides()
 	RestoreAll()
+	copies = {}
 	table.Empty(entityModels)
 end
 
@@ -404,6 +510,9 @@ end
 
 cvars.AddChangeCallback(toon_lighting:GetName(), Update, "ToonLighting")
 cvars.AddChangeCallback(toon_lighting_flat_mats:GetName(), Update, "ToonLighting")
+cvars.AddChangeCallback(toon_lighting_copies:GetName(), function()
+	if active then ScanEntities(true) end
+end, "ToonLighting")
 hook.Add("InitPostEntity", "ToonLighting", Update)
 
 -- after settings changes the engine may reload materials, so re-check everything
@@ -437,7 +546,7 @@ concommand.Add("toon_lighting_inspect", function()
 	end
 
 	MsgN("[toon_lighting] ", ent:GetClass(), " ", ent:GetModel() or "")
-	for _, name in ipairs(ent:GetMaterials() or {}) do
+	for i, name in ipairs(ent:GetMaterials() or {}) do
 		local mat = Material(name)
 		local state = patched[name] and "patched" or (skipped[name] and "skipped" or "not seen")
 		if staticPropMaterials and staticPropMaterials[name] then state = state .. ", used by static props" end
@@ -451,6 +560,12 @@ concommand.Add("toon_lighting_inspect", function()
 		if saved then
 			MsgN("    original bumpmap: ", DescribeTexture(saved.bump), "  original phong: ", tostring(saved.phong))
 		end
+
+		local override = ent:GetSubMaterial(i - 1) or ""
+		if override != "" then
+			local ours = overrides[ent] and overrides[ent][i - 1] == override
+			MsgN("    sub-material override: ", override, ours and " (toon copy)" or " (set by server/tool)")
+		end
 	end
 end)
 
@@ -462,6 +577,7 @@ list.Set("PostProcess", "Toon Lighting", {
 		panel:Help("Cartoon lighting on models, using the engine's light ramp ($lightwarptexture).")
 		panel:CheckBox("Enable", "toon_lighting")
 		panel:CheckBox("Flat materials (no specular or bloom)", "toon_lighting_flat_mats")
+		panel:CheckBox("Toon copies for models sharing static prop materials", "toon_lighting_copies")
 		panel:NumSlider("Bands", "toon_lighting_bands", 2, 8, 0)
 		panel:NumSlider("Shadow threshold", "toon_lighting_threshold", 0.05, 0.95, 2)
 		panel:NumSlider("Edge softness", "toon_lighting_softness", 0, 0.25, 3)
