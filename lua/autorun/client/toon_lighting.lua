@@ -9,12 +9,14 @@
 -- phong get $phong 1 (with $phongboost 0, so no extra shine) and a flat normal map
 -- if they have none. Everything is restored when turned off.
 --
--- Static props are the exception: the engine decides at map load whether a static
--- prop gets baked vertex lighting (no bumpmap) or runtime lighting (bumpmap). Adding
--- a bumpmap afterwards leaves it with no lighting at all, so it renders black.
--- Materials used by static props are therefore only patched if they already have a
--- bumpmap. Static prop models are read from the map's .bsp file; if that fails, no
--- bumpmaps are added at all, to be safe.
+-- Static props are the exception: their lighting is baked into their vertices at map
+-- load, which the phong path ignores, so patched static props render black (and in
+-- testing, so did dynamic models sharing their materials). Materials used by static
+-- props are therefore never patched. Static prop models are read from the map's .bsp
+-- file; if that fails, nothing is patched at all, to be safe.
+--
+-- toon_lighting_inspect prints what happened to the materials of the model you're
+-- looking at.
 --
 -- Usage: toon_lighting 1
 
@@ -225,7 +227,7 @@ local function CollectStaticPropMaterials()
 
 	local models = ReadStaticPropModels()
 	if !models then
-		MsgN("[toon_lighting] static props unknown, only models that already have bumpmaps get toon lighting")
+		MsgN("[toon_lighting] static props unknown, toon lighting is disabled on this map to be safe")
 		return
 	end
 
@@ -244,8 +246,8 @@ local function CollectStaticPropMaterials()
 	MsgN("[toon_lighting] found ", #models, " static prop models using ", count, " materials")
 end
 
--- adding a bumpmap is only safe if no static prop uses the material (see top)
-local function CanAddBumpmap(name)
+-- patching is only safe if no static prop uses the material (see top)
+local function CanPatch(name)
 	return staticPropMaterials != nil and !staticPropMaterials[name]
 end
 
@@ -267,10 +269,10 @@ local function PatchMaterial(name)
 	end
 
 	local saved = SaveParams(mat)
-	if !saved.bump and !CanAddBumpmap(name) then
+	if !CanPatch(name) then
 		skipped[name] = true
 		-- undo our changes if it still has them from before (see SaveParams)
-		if IsOurTexture(mat:GetTexture("$bumpmap"), flatNormalRT) then
+		if IsOurTexture(mat:GetTexture("$lightwarptexture"), rampRT) then
 			RestoreMaterial(mat, saved)
 		end
 		return
@@ -418,6 +420,39 @@ end)
 -- render targets can lose their contents (alt-tab, resolution change), so redraw now and then
 timer.Create("ToonLighting_Ramp", 5, 0, function() rampDirty = true end)
 hook.Add("OnScreenSizeChanged", "ToonLighting", function() rampDirty = true end)
+
+local function DescribeTexture(tex)
+	if !tex then return "none" end
+	return tex:GetName() .. (tex:IsError() and " (error)" or "")
+end
+
+concommand.Add("toon_lighting_inspect", function()
+	local ply = LocalPlayer()
+	local tr = ply:GetEyeTrace()
+	local ent = tr.Entity
+
+	if !IsValid(ent) or ent:IsWorld() then
+		MsgN("[toon_lighting] looking at the world (", tr.HitTexture or "?", "). Static props can't be inspected, spawn a copy instead.")
+		return
+	end
+
+	MsgN("[toon_lighting] ", ent:GetClass(), " ", ent:GetModel() or "")
+	for _, name in ipairs(ent:GetMaterials() or {}) do
+		local mat = Material(name)
+		local state = patched[name] and "patched" or (skipped[name] and "skipped" or "not seen")
+		if staticPropMaterials and staticPropMaterials[name] then state = state .. ", used by static props" end
+
+		MsgN("  ", name, " [", state, "]")
+		MsgN("    shader: ", mat:GetShader() or "?",
+			"  bumpmap: ", DescribeTexture(mat:GetTexture("$bumpmap")),
+			"  phong: ", tostring(mat:GetInt("$phong")),
+			"  lightwarp: ", DescribeTexture(mat:GetTexture("$lightwarptexture")))
+		local saved = patched[name] and patched[name].saved
+		if saved then
+			MsgN("    original bumpmap: ", DescribeTexture(saved.bump), "  original phong: ", tostring(saved.phong))
+		end
+	end
+end)
 
 list.Set("PostProcess", "Toon Lighting", {
 	["icon"] = "gui/postprocess/colourmod.png",
