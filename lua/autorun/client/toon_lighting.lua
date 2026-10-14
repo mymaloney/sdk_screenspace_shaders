@@ -9,7 +9,12 @@
 -- phong get $phong 1 (with $phongboost 0, so no extra shine) and a flat normal map
 -- if they have none. Everything is restored when turned off.
 --
--- Static props are found through NikNaks (installed with the GShader library).
+-- Static props are the exception: the engine decides at map load whether a static
+-- prop gets baked vertex lighting (no bumpmap) or runtime lighting (bumpmap). Adding
+-- a bumpmap afterwards leaves it with no lighting at all, so it renders black.
+-- Materials used by static props are therefore only patched if they already have a
+-- bumpmap. Static props are found through NikNaks (installed with the GShader
+-- library); without it no bumpmaps are added at all, to be safe.
 --
 -- Usage: toon_lighting 1
 
@@ -134,6 +139,37 @@ local function IsPatchedNow(mat)
 	return tex and tex:GetName() == rampRT:GetName()
 end
 
+-- materials used by static props (nil = unknown, NikNaks not available)
+local staticPropMaterials
+local staticPropsCollected = false
+
+-- static props aren't entities on the client, so look their models up through NikNaks
+-- and read the materials from a temporary clientside model
+local function CollectStaticPropMaterials()
+	if staticPropsCollected then return end
+	staticPropsCollected = true
+
+	if !NikNaks or !NikNaks.CurrentMap then return end
+	local ok, models = pcall(NikNaks.CurrentMap.GetStaticPropModels, NikNaks.CurrentMap)
+	if !ok or !models then return end
+
+	staticPropMaterials = {}
+	for _, model in ipairs(models) do
+		local csModel = ClientsideModel(model, RENDERGROUP_OTHER)
+		if IsValid(csModel) then
+			for _, name in ipairs(csModel:GetMaterials() or {}) do
+				staticPropMaterials[name] = true
+			end
+			csModel:Remove()
+		end
+	end
+end
+
+-- adding a bumpmap is only safe if no static prop uses the material (see top)
+local function CanAddBumpmap(name)
+	return staticPropMaterials != nil and !staticPropMaterials[name]
+end
+
 local function PatchMaterial(name)
 	if name == "" or skipped[name] then return end
 
@@ -152,6 +188,11 @@ local function PatchMaterial(name)
 	end
 
 	local saved = SaveParams(mat)
+	if !saved.bump and !CanAddBumpmap(name) then
+		skipped[name] = true
+		return
+	end
+
 	patched[name] = { mat = mat, saved = saved }
 	ApplyParams(mat, saved)
 end
@@ -169,6 +210,12 @@ local function RestoreAll()
 	patched = {}
 end
 
+local function PatchStaticProps()
+	for name in pairs(staticPropMaterials or {}) do
+		PatchMaterial(name)
+	end
+end
+
 local function PatchEntity(ent)
 	for _, name in ipairs(ent:GetMaterials() or {}) do
 		PatchMaterial(name)
@@ -180,38 +227,13 @@ local function PatchEntity(ent)
 	end
 end
 
--- static props aren't entities on the client, so look their models up through NikNaks
--- and read the materials from a temporary clientside model
-local staticPropMaterials
-
-local function PatchStaticProps()
-	if !staticPropMaterials then
-		staticPropMaterials = {}
-		if !NikNaks or !NikNaks.CurrentMap then return end
-
-		local ok, models = pcall(NikNaks.CurrentMap.GetStaticPropModels, NikNaks.CurrentMap)
-		if !ok or !models then return end
-
-		for _, model in ipairs(models) do
-			local csModel = ClientsideModel(model, RENDERGROUP_OTHER)
-			if IsValid(csModel) then
-				for _, name in ipairs(csModel:GetMaterials() or {}) do
-					staticPropMaterials[name] = true
-				end
-				csModel:Remove()
-			end
-		end
-	end
-
-	for name in pairs(staticPropMaterials) do
-		PatchMaterial(name)
-	end
-end
-
 -- entities only need checking again when their model changes
 local entityModels = setmetatable({}, { __mode = "k" })
 
 local function ScanEntities(force)
+	-- needed before patching anything, to know which materials static props use
+	CollectStaticPropMaterials()
+
 	for _, ent in ipairs(ents.GetAll()) do
 		local model = ent:GetModel()
 		if model and (force or entityModels[ent] != model) then
@@ -280,6 +302,7 @@ local function Enable()
 	end)
 	timer.Simple(1, function()
 		if !active then return end
+		CollectStaticPropMaterials()
 		ScanEntities(true)
 		PatchStaticProps()
 	end)
