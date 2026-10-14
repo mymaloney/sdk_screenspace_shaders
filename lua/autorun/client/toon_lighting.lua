@@ -9,10 +9,10 @@
 -- phong get $phong 1 (with $phongboost 0, so no extra shine) and a flat normal map
 -- if they have none. Everything is restored when turned off.
 --
--- Static props are the exception: their lighting is baked into their vertices at map
--- load, which the phong path ignores, so patched static props render black (and in
--- testing, so did dynamic models sharing their materials). Materials used by static
--- props are therefore never patched. Instead, spawned models using them get their own
+-- The phong path ignores lighting baked into a model's vertices. Physics props switch
+-- to that when they come to rest, so r_PhysPropStaticLighting is set to 0 while
+-- enabled. Static props always use it, so patched static props render black.
+-- Materials used by static props are therefore never patched. Instead, spawned models using them get their own
 -- copy of the material (through a client-side sub-material override), and the copy is
 -- patched. Static prop models are read from the map's .bsp file; if that fails,
 -- nothing is patched at all, to be safe.
@@ -430,37 +430,70 @@ end
 -- Engine settings
 -------------------------------------------------------------------------------
 
--- specular reflections and bloom add shine that fights the flat look.
+-- Settings needed for toon lighting to work:
+-- resting physics props switch to baked per-vertex lighting (like static props),
+-- which the lightwarp path ignores, so they would turn black when they stop moving
+local REQUIRED_SETTINGS = {
+	{ "r_PhysPropStaticLighting", "0" },
+}
+
+-- Optional: specular reflections and bloom add shine that fights the flat look.
 -- (mat_bumpmap 0 is not used: it turns off the lighting path lightwarp needs)
-local FLAT_MATS = {
+local FLAT_SETTINGS = {
 	{ "mat_specular", "0" },
 	{ "mat_disable_bloom", "1" },
 }
 
-local function ApplyFlatMats(enable)
-	local saved = toon_lighting_saved_mats:GetString()
+-- the original values are kept in an archived convar as "name=value;name=value",
+-- so they can be restored even after a crash or restart
+local function LoadSavedSettings()
+	local saved = {}
+	local str = toon_lighting_saved_mats:GetString()
 
-	if enable then
-		if saved != "" then return end -- already applied (e.g. carried over from last session)
-
-		local old = {}
-		for _, setting in ipairs(FLAT_MATS) do
-			local cvar = GetConVar(setting[1])
-			old[#old + 1] = cvar and cvar:GetString() or ""
-			RunConsoleCommand(setting[1], setting[2])
-		end
-		RunConsoleCommand(toon_lighting_saved_mats:GetName(), table.concat(old, " "))
-	else
-		if saved == "" then return end
-
-		local old = string.Explode(" ", saved)
-		for i, setting in ipairs(FLAT_MATS) do
-			if old[i] and old[i] != "" then
-				RunConsoleCommand(setting[1], old[i])
-			end
-		end
-		RunConsoleCommand(toon_lighting_saved_mats:GetName(), "")
+	if str != "" and !string.find(str, "=", 1, true) then
+		-- older format: "mat_specular mat_disable_bloom" values separated by spaces
+		local old = string.Explode(" ", str)
+		saved["mat_specular"] = old[1] != "" and old[1] or nil
+		saved["mat_disable_bloom"] = old[2] != "" and old[2] or nil
+		return saved
 	end
+
+	for _, pair in ipairs(string.Explode(";", str)) do
+		local name, value = string.match(pair, "^([^=]+)=(.*)$")
+		if name then saved[name] = value end
+	end
+	return saved
+end
+
+local function StoreSavedSettings(saved)
+	local parts = {}
+	for name, value in SortedPairs(saved) do
+		parts[#parts + 1] = name .. "=" .. value
+	end
+	RunConsoleCommand(toon_lighting_saved_mats:GetName(), table.concat(parts, ";"))
+end
+
+local function ApplySettingList(list, enable, saved)
+	for _, setting in ipairs(list) do
+		local name, value = setting[1], setting[2]
+		local cvar = GetConVar(name)
+
+		if enable then
+			-- only remember the original the first time (it may be carried over from last session)
+			if saved[name] == nil and cvar then saved[name] = cvar:GetString() end
+			RunConsoleCommand(name, value)
+		elseif saved[name] != nil then
+			RunConsoleCommand(name, saved[name])
+			saved[name] = nil
+		end
+	end
+end
+
+local function ApplyEngineSettings(enable, flat)
+	local saved = LoadSavedSettings()
+	ApplySettingList(REQUIRED_SETTINGS, enable, saved)
+	ApplySettingList(FLAT_SETTINGS, enable and flat, saved)
+	StoreSavedSettings(saved)
 end
 
 -------------------------------------------------------------------------------
@@ -502,7 +535,7 @@ end
 
 local function Update()
 	local enable = toon_lighting:GetBool()
-	ApplyFlatMats(enable and toon_lighting_flat_mats:GetBool())
+	ApplyEngineSettings(enable, toon_lighting_flat_mats:GetBool())
 
 	if enable and !active then Enable()
 	elseif !enable and active then Disable() end
