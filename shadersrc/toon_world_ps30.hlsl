@@ -22,7 +22,7 @@
 //   $c0_xyz : direction towards the sun          $c0_w : sun strength
 //   $c1_xyz : sun color                          $c1_w : ambient (baked light kept)
 //   $c2_xyz : eye position                       $c2_w : lightmap scale (16 HDR, 4.59479 LDR)
-//   $c3_x   : shadow depth bias (0-1 depth)      $c3_y : normal offset (units)
+//   $c3_x   : shadow depth bias (0-1 depth)      $c3_y : normal offset (units, at grazing angles)
 //   $c3_z   : terminator softness                $c3_w : debug view (1 = shadow term only)
 //   $VIEWPROJMAT : world -> shadow map (u, v, depth, 1)
 
@@ -80,29 +80,39 @@ float4 main( PS_INPUT_VPOS i ) : COLOR
 	float isWorld = step(1e-4, dot(baked, LumaWeights)) * step(0.5, abs(depth - SKY_DEPTH));
 
 	// --- sun shadow ---
-	// offset along the normal before looking up, to avoid self-shadowing acne
-	float4 shadowPos = mul(float4(worldPos + normal * NormalOffset, 1.0), g_WorldToShadow);
+	// offset along the normal before looking up, to avoid self-shadowing. Surfaces the
+	// sun grazes need more: one shadow map texel stretches over a long strip of them
+	float sunDot = dot(normal, SunDir);
+	float grazing = sqrt(saturate(1.0 - sunDot * sunDot));
+	float4 shadowPos = mul(float4(worldPos + normal * (NormalOffset * (0.25 + grazing)), 1.0), g_WorldToShadow);
 	float shadowDepth = shadowPos.z - ShadowBias;
 
-	// bilinear filtering of the shadow test: blend the 4 nearest texels by distance.
-	// Its 50% contour runs smoothly between texels, so hardening it below gives a
-	// crisp edge without the staircase of individual shadow map texels
+	// filter the shadow test over 5x5 texels (with bilinear weights at the border, so
+	// it slides smoothly), then harden the result. The blur removes the texel-sized
+	// zig-zag of the shadow map, so the hardened edge follows the real shadow line
 	float2 texelPos = shadowPos.xy / ShadowTexel - 0.5;
 	float2 blend = frac(texelPos);
-	float2 base = (floor(texelPos) + 0.5) * ShadowTexel;
-	float s00 = ShadowTap(base, shadowDepth);
-	float s10 = ShadowTap(base + float2(ShadowTexel.x, 0.0), shadowDepth);
-	float s01 = ShadowTap(base + float2(0.0, ShadowTexel.y), shadowDepth);
-	float s11 = ShadowTap(base + ShadowTexel, shadowDepth);
-	float shadow = lerp(lerp(s00, s10, blend.x), lerp(s01, s11, blend.x), blend.y);
-	shadow = smoothstep(0.4, 0.6, shadow);
+	float2 base = (floor(texelPos) - 1.5) * ShadowTexel; // texel centers from -2 to +3
+	float shadow = 0.0;
+	[unroll]
+	for (int ty = 0; ty < 6; ty++)
+	{
+		float wy = (ty == 0) ? (1.0 - blend.y) : ((ty == 5) ? blend.y : 1.0);
+		[unroll]
+		for (int tx = 0; tx < 6; tx++)
+		{
+			float wx = (tx == 0) ? (1.0 - blend.x) : ((tx == 5) ? blend.x : 1.0);
+			shadow += wx * wy * ShadowTap(base + float2(tx, ty) * ShadowTexel, shadowDepth);
+		}
+	}
+	shadow = smoothstep(0.4, 0.6, shadow / 25.0);
 
 	// outside the shadow map the scene keeps its original lighting, fading out near the edge
 	float2 edge = abs(shadowPos.xy - 0.5) * 2.0;
 	float coverage = saturate((1.0 - max(edge.x, edge.y)) * 10.0) * step(shadowPos.z, 1.0) * step(0.0, shadowPos.z);
 
 	// --- toon lighting ---
-	float terminator = smoothstep(-Softness, Softness, dot(normal, SunDir));
+	float terminator = smoothstep(-Softness, Softness, sunDot);
 	float direct = terminator * shadow;
 	float3 lighting = AmbientScale * baked + SunColor * (SunStrength * direct);
 

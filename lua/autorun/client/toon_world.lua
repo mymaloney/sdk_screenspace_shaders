@@ -24,7 +24,7 @@ local toon_world_sun_angles  = CreateClientConVar("toon_world_sun_angles", "", t
 local toon_world_range       = CreateClientConVar("toon_world_range", "2048", true, false, "Shadows are drawn within this distance (units). Larger = blurrier shadows.", 256, 16384)
 local toon_world_softness    = CreateClientConVar("toon_world_softness", "0.05", true, false, "Softness of the light/shadow terminator on surfaces.", 0.001, 0.5)
 local toon_world_bias        = CreateClientConVar("toon_world_bias", "4", true, false, "Shadow depth bias (units), raise if surfaces shadow themselves in stripes.", 0, 64)
-local toon_world_offset      = CreateClientConVar("toon_world_offset", "2", true, false, "Shadow normal offset (units), raise if surfaces shadow themselves in stripes.", 0, 32)
+local toon_world_offset      = CreateClientConVar("toon_world_offset", "1.5", true, false, "Shadow normal offset in shadow map texels, raise if surfaces shadow themselves in stripes or teeth.", 0, 8)
 local toon_world_resolution  = CreateClientConVar("toon_world_resolution", "2048", true, false, "Shadow map resolution (needs a game restart).", 512, 4096)
 local toon_world_flip        = CreateClientConVar("toon_world_flip", "0", true, false, "Debug: flip the shadow map lookup if shadows look mirrored (1 = horizontal, 2 = vertical, 3 = both).", 0, 3)
 local toon_world_debug       = CreateClientConVar("toon_world_debug", "0", false, false, "Debug view: 1 = shadow term (white lit, black shadow, red not relit), 2 = also show the shadow map.", 0, 2)
@@ -219,6 +219,7 @@ local function RenderShadowMap()
 			{ 0, 0, 0, 1 },
 		}),
 		depthScale = 1 / (zfar - znear),
+		texelSize = texel,
 	}
 end
 
@@ -261,7 +262,7 @@ local function Relight()
 	relightMat:SetFloat("$c2_z", eye.z)
 	relightMat:SetFloat("$c2_w", render.GetHDREnabled() and 16 or 4.59479)
 	relightMat:SetFloat("$c3_x", toon_world_bias:GetFloat() * shadowParams.depthScale)
-	relightMat:SetFloat("$c3_y", toon_world_offset:GetFloat())
+	relightMat:SetFloat("$c3_y", toon_world_offset:GetFloat() * shadowParams.texelSize)
 	relightMat:SetFloat("$c3_z", toon_world_softness:GetFloat())
 	relightMat:SetFloat("$c3_w", toon_world_debug:GetInt() > 0 and 1 or 0)
 
@@ -353,7 +354,7 @@ list.Set("PostProcess", "Toon World", {
 		panel:NumSlider("Shadow range", "toon_world_range", 256, 16384, 0)
 		panel:NumSlider("Terminator softness", "toon_world_softness", 0.001, 0.5, 3)
 		panel:NumSlider("Shadow bias", "toon_world_bias", 0, 64, 1)
-		panel:NumSlider("Shadow normal offset", "toon_world_offset", 0, 32, 1)
+		panel:NumSlider("Shadow normal offset", "toon_world_offset", 0, 8, 2)
 		panel:NumSlider("Debug view", "toon_world_debug", 0, 2, 0)
 	end
 })
