@@ -101,6 +101,11 @@ But there is a workaround: you can rename a recompiled shader to something else,
 
 Copy the file into `garrysmod/lua/autorun/client` (or an addon) and enable it with `toon_lighting 1`, or from the Post Process menu under Effects. Settings are exposed as `toon_lighting_*` convars. It requires `mat_bumpmap 1`. While enabled it sets `r_PhysPropStaticLighting 0` (resting physics props would otherwise switch to baked vertex lighting and turn black), plus `mat_specular 0` and `mat_disable_bloom 1`, restoring the previous values when turned off (`toon_lighting_flat_mats 0` to opt out).
 
+### World
+`lua/autorun/client/toon_world.lua` relights world brushes, which use baked lightmaps instead of a light ramp. Every frame it renders a sun shadow map (an orthographic view from the map's `light_environment` direction, drawn with the `toon_sundepth` shaders as a material override), then the `toon_world` screen pass replaces each world pixel's baked lighting with `ambient * baked lightmap + sun * hard N.L * sun shadow`. It requires the [GShader library](https://github.com/Akabenko/GShader-library) and turns on `r_shaderlib` and `r_shaderlib_lightmaps` while enabled.
+
+Build the shaders with `shadersrc/build_toon_world.bat` (Shader Model 3.0), copy `toon_sundepth_vs30.vcs`, `toon_sundepth_ps30.vcs` and `toon_world_ps30.vcs` into `garrysmod/shaders/fxc`, copy the Lua file, and enable it with `toon_world 1`. `toon_world_debug 1` shows the shadow term (white lit, black shadow, red not relit) and `toon_world_debug 2` also shows the shadow map.
+
 ## Packing the Shader
 If using these in a map: you will need to manually include the shader files if packing with VIDE or CompilePal, as they will not autodetect the files.
 
